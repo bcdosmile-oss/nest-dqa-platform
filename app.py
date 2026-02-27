@@ -181,7 +181,29 @@ def ga_category(x):
 work = df.copy()
 work["bw_cat"] = bw.map(bw_category)
 work["ga_cat"] = ga.map(ga_category)
+# ------------------------
+# FACILITY MODE: All vs Single facility
+# ------------------------
+st.subheader("0) Analysis mode")
 
+# Ensure facility column is string
+work[facility_col] = work[facility_col].astype(str).str.strip()
+
+all_facilities = sorted([f for f in work[facility_col].dropna().unique() if f != "nan"])
+
+mode = st.radio(
+    "Choose analysis scope",
+    ["All facilities (aggregate)", "Single facility (facility report)"],
+    horizontal=True
+)
+
+if mode == "Single facility (facility report)":
+    selected_facility = st.selectbox("Select facility", options=all_facilities)
+    data = work[work[facility_col] == selected_facility].copy()
+    st.info(f"Showing results for: **{selected_facility}**")
+else:
+    data = work.copy()
+    st.info("Showing results for: **All facilities (aggregate)**")
 left, right = st.columns(2)
 
 with left:
