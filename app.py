@@ -28,7 +28,10 @@ def check_password():
     st.stop()
 
 check_password()
-
+with st.sidebar:
+    if st.button("Logout"):
+        st.session_state.authenticated = False
+        st.rerun()
 # ------------------------
 # MAIN APP
 # ------------------------
