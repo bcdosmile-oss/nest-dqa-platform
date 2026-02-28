@@ -109,6 +109,46 @@ with col6:
 # PREP WORK (numeric conversions + categories)
 # ------------------------
 work = df.copy()
+# ------------------------
+# FILTER: Final + Prospective ONLY (Robust Version)
+# ------------------------
+final_col = "Are you entering a BASELINE or FINAL dataset record?"
+rp_col = "Are you entering a RETROSPECTIVE or PROSPECTIVE record?"
+
+if final_col in work.columns and rp_col in work.columns:
+
+    before = len(work)
+
+    # Convert to string safely
+    final_series = work[final_col].astype(str).str.strip().str.lower()
+    rp_series = work[rp_col].astype(str).str.strip().str.lower()
+
+    # Keep records where:
+    # - Final column contains "final" OR equals coded value "2"
+    # - Prospective column contains "prospective" OR equals coded value "2"
+
+    work = work[
+        (
+            final_series.str.contains("final", na=False) |
+            final_series.isin(["2", "final"])
+        )
+        &
+        (
+            rp_series.str.contains("prospective", na=False) |
+            rp_series.isin(["2", "prospective"])
+        )
+    ].copy()
+
+    removed = before - len(work)
+
+    st.success(f"Filtered to Final + Prospective only: {len(work):,} records (removed {removed:,}).")
+
+    if len(work) == 0:
+        st.error("After filtering to Final + Prospective, no records remain. Check your dataset export.")
+        st.stop()
+
+else:
+    st.warning("Final/Prospective columns not found in this file. No baseline filter applied.")
 work[facility_col] = work[facility_col].astype(str).str.strip()
 
 bw = pd.to_numeric(work[bw_col], errors="coerce")
