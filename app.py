@@ -49,9 +49,7 @@ if uploaded_file.name.lower().endswith(".csv"):
 else:
     df = pd.read_excel(uploaded_file)
 
-# Keep original column names (REDCap labels), but also make a normalized lookup for matching
 original_cols = list(df.columns)
-norm_map = {c: str(c).strip().lower().replace(" ", "_") for c in original_cols}
 
 st.subheader("Data Preview")
 st.dataframe(df.head(20), use_container_width=True)
@@ -108,12 +106,59 @@ with col6:
     )
 
 # ------------------------
-# BASIC DQA
+# PREP WORK (numeric conversions + categories)
 # ------------------------
-st.subheader("2) Data Quality Assurance (DQA) summary")
+work = df.copy()
+work[facility_col] = work[facility_col].astype(str).str.strip()
 
-total_rows = len(df)
-duplicates = int(df.duplicated().sum())
+bw = pd.to_numeric(work[bw_col], errors="coerce")
+ga = pd.to_numeric(work[ga_col], errors="coerce")
+
+def bw_category(x):
+    if pd.isna(x): return "Missing"
+    if x < 1000: return "<1000g"
+    if 1000 <= x <= 1499: return "1000–1499g"
+    if 1500 <= x <= 2499: return "1500–2499g"
+    return "≥2500g"
+
+def ga_category(x):
+    if pd.isna(x): return "Missing"
+    if x < 28: return "<28 weeks"
+    if 28 <= x < 32: return "28–<32 weeks"
+    if 32 <= x < 37: return "32–<37 weeks"
+    return "≥37 weeks"
+
+work["bw_cat"] = bw.map(bw_category)
+work["ga_cat"] = ga.map(ga_category)
+
+# ------------------------
+# ANALYSIS MODE (All vs Single facility)
+# ------------------------
+st.subheader("2) Analysis mode")
+
+all_facilities = sorted([f for f in work[facility_col].dropna().unique() if f.lower() != "nan"])
+
+mode = st.radio(
+    "Choose analysis scope",
+    ["All facilities (aggregate)", "Single facility (facility report)"],
+    horizontal=True
+)
+
+if mode == "Single facility (facility report)":
+    selected_facility = st.selectbox("Select facility", options=all_facilities)
+    data = work[work[facility_col] == selected_facility].copy()
+    st.info(f"Showing results for: **{selected_facility}** (n={len(data):,})")
+else:
+    data = work.copy()
+    st.info(f"Showing results for: **All facilities (aggregate)** (n={len(data):,})")
+
+# ------------------------
+# DQA SUMMARY (based on current scope)
+# ------------------------
+st.subheader("3) Data Quality Assurance (DQA) summary")
+
+total_rows = len(data)
+duplicates = int(data.duplicated().sum())
 
 key_cols = [facility_col, bw_col, ga_col]
 if cpap_col != "(None)":
@@ -123,19 +168,15 @@ if kmc_col != "(None)":
 if outcome_col != "(None)":
     key_cols.append(outcome_col)
 
-missing_key = df[key_cols].isna().sum().sort_values(ascending=False)
+missing_key = data[key_cols].isna().sum().sort_values(ascending=False)
 missing_key_total = int(missing_key.sum())
 
-# Convert BW/GA to numeric for validity checks
-bw = pd.to_numeric(df[bw_col], errors="coerce")
-ga = pd.to_numeric(df[ga_col], errors="coerce")
+bw_scoped = pd.to_numeric(data[bw_col], errors="coerce")
+ga_scoped = pd.to_numeric(data[ga_col], errors="coerce")
 
-# Validity rules (you can tweak later)
-bw_out_of_range = int(((bw < 300) | (bw > 5500)).sum())  # same as your DQA report logic
-ga_out_of_range = int(((ga < 20) | (ga > 44)).sum())
+bw_out_of_range = int(((bw_scoped < 300) | (bw_scoped > 5500)).sum())
+ga_out_of_range = int(((ga_scoped < 20) | (ga_scoped > 44)).sum())
 
-# Starter DQA score (simple & transparent)
-# Penalize: missing on key fields + duplicates + out-of-range BW/GA
 error_points = missing_key_total + duplicates + bw_out_of_range + ga_out_of_range
 dqa_score = max(0.0, 100.0 - (error_points / (total_rows + 1)) * 100.0)
 
@@ -160,55 +201,15 @@ st.write(f"- Birth weight out of range (<300 or >5500g): **{bw_out_of_range:,}**
 st.write(f"- Gestational age out of range (<20 or >44 weeks): **{ga_out_of_range:,}**")
 
 # ------------------------
-# CATEGORIZATION (BW + GA)
+# CATEGORY DISTRIBUTIONS (based on current scope)
 # ------------------------
-st.subheader("3) Birth weight & gestational age categories")
+st.subheader("4) Birth weight & gestational age categories")
 
-def bw_category(x):
-    if pd.isna(x): return "Missing"
-    if x < 1000: return "<1000g"
-    if 1000 <= x <= 1499: return "1000–1499g"
-    if 1500 <= x <= 2499: return "1500–2499g"
-    return "≥2500g"
-
-def ga_category(x):
-    if pd.isna(x): return "Missing"
-    if x < 28: return "<28 weeks"
-    if 28 <= x < 32: return "28–<32 weeks"
-    if 32 <= x < 37: return "32–<37 weeks"
-    return "≥37 weeks"
-
-work = df.copy()
-work["bw_cat"] = bw.map(bw_category)
-work["ga_cat"] = ga.map(ga_category)
-# ------------------------
-# FACILITY MODE: All vs Single facility
-# ------------------------
-st.subheader("0) Analysis mode")
-
-# Ensure facility column is string
-work[facility_col] = work[facility_col].astype(str).str.strip()
-
-all_facilities = sorted([f for f in work[facility_col].dropna().unique() if f != "nan"])
-
-mode = st.radio(
-    "Choose analysis scope",
-    ["All facilities (aggregate)", "Single facility (facility report)"],
-    horizontal=True
-)
-
-if mode == "Single facility (facility report)":
-    selected_facility = st.selectbox("Select facility", options=all_facilities)
-    data = work[work[facility_col] == selected_facility].copy()
-    st.info(f"Showing results for: **{selected_facility}**")
-else:
-    data = work.copy()
-    st.info("Showing results for: **All facilities (aggregate)**")
 left, right = st.columns(2)
 
 with left:
     st.markdown("#### Birth weight categories")
-    bw_counts = work["bw_cat"].value_counts()
+    bw_counts = data["bw_cat"].value_counts()
     st.dataframe(bw_counts.to_frame("count"), use_container_width=True)
 
     fig = plt.figure()
@@ -219,7 +220,7 @@ with left:
 
 with right:
     st.markdown("#### Gestational age categories")
-    ga_counts = work["ga_cat"].value_counts()
+    ga_counts = data["ga_cat"].value_counts()
     st.dataframe(ga_counts.to_frame("count"), use_container_width=True)
 
     fig = plt.figure()
@@ -231,85 +232,54 @@ with right:
 # ------------------------
 # INTERVENTIONS & OUTCOMES
 # ------------------------
-st.subheader("4) Interventions and outcomes (by BW/GA categories)")
+st.subheader("5) Interventions and outcomes (by BW/GA categories)")
 
 def yes_rate(series):
     if series is None:
         return None
     s = series.astype(str).str.strip().str.lower()
-    # Treat "yes" as yes; everything else not yes
     return (s == "yes").mean() * 100
 
 def death_rate(series):
     if series is None:
         return None
     s = series.astype(str).str.strip().str.lower()
-    # Works with "Alive/Dead" style
     return (s == "dead").mean() * 100
-
-# Clean “Yes/No” columns if selected
-cpap_series = work[cpap_col] if cpap_col != "(None)" else None
-kmc_series = work[kmc_col] if kmc_col != "(None)" else None
-out_series = work[outcome_col] if outcome_col != "(None)" else None
 
 tab1, tab2 = st.tabs(["By Birth weight", "By Gestational age"])
 
 with tab1:
-    grp = work.groupby("bw_cat", dropna=False)
+    grp = data.groupby("bw_cat", dropna=False)
+    summary = pd.DataFrame({"n": grp.size()})
 
-    summary = pd.DataFrame({
-        "n": grp.size(),
-    })
-
-    if cpap_series is not None:
+    if cpap_col != "(None)":
         summary["CPAP yes (%)"] = grp[cpap_col].apply(yes_rate)
-    if kmc_series is not None:
+    if kmc_col != "(None)":
         summary["KMC yes (%)"] = grp[kmc_col].apply(yes_rate)
-    if out_series is not None:
+    if outcome_col != "(None)":
         summary["Death (%)"] = grp[outcome_col].apply(death_rate)
 
     st.dataframe(summary, use_container_width=True)
-
-    # Simple chart: Death (%) if available
-    if "Death (%)" in summary.columns:
-        fig = plt.figure()
-        summary["Death (%)"].plot(kind="bar")
-        plt.xticks(rotation=45, ha="right")
-        plt.ylabel("Death (%)")
-        st.pyplot(fig)
 
 with tab2:
-    grp = work.groupby("ga_cat", dropna=False)
+    grp = data.groupby("ga_cat", dropna=False)
+    summary = pd.DataFrame({"n": grp.size()})
 
-    summary = pd.DataFrame({
-        "n": grp.size(),
-    })
-
-    if cpap_series is not None:
+    if cpap_col != "(None)":
         summary["CPAP yes (%)"] = grp[cpap_col].apply(yes_rate)
-    if kmc_series is not None:
+    if kmc_col != "(None)":
         summary["KMC yes (%)"] = grp[kmc_col].apply(yes_rate)
-    if out_series is not None:
+    if outcome_col != "(None)":
         summary["Death (%)"] = grp[outcome_col].apply(death_rate)
 
     st.dataframe(summary, use_container_width=True)
 
-    if "Death (%)" in summary.columns:
-        fig = plt.figure()
-        summary["Death (%)"].plot(kind="bar")
-        plt.xticks(rotation=45, ha="right")
-        plt.ylabel("Death (%)")
-        st.pyplot(fig)
-
 # ------------------------
-# FACILITY LEVEL DQA
+# FACILITY LEVEL DQA (always from full dataset)
 # ------------------------
-st.subheader("5) Facility-level DQA (ranking)")
+st.subheader("6) Facility-level DQA (ranking)")
 
-# Facility key completeness on BW + GA
-fac = work[facility_col].astype(str)
-
-fac_table = work.groupby(fac).apply(
+fac_table = work.groupby(facility_col).apply(
     lambda g: pd.Series({
         "records": len(g),
         "BW missing (%)": g[bw_col].isna().mean() * 100,
@@ -324,16 +294,23 @@ fac_table = work.groupby(fac).apply(
 st.dataframe(fac_table, use_container_width=True)
 
 # ------------------------
-# DOWNLOAD REPORT
+# DOWNLOAD REPORT (scoped)
 # ------------------------
-st.subheader("6) Download outputs")
+st.subheader("7) Download outputs")
+
+filename = "NEST360_DQA_Report.xlsx"
+if mode == "Single facility (facility report)":
+    safe_name = "".join(ch for ch in selected_facility if ch.isalnum() or ch in [" ", "_", "-"]).strip()
+    filename = f"NEST360_DQA_Report_{safe_name}.xlsx"
 
 output = io.BytesIO()
 with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-    work.to_excel(writer, index=False, sheet_name="data_with_categories")
+    data.to_excel(writer, index=False, sheet_name="data_with_categories")
     missing_key.to_frame("missing_count").to_excel(writer, sheet_name="missing_key_fields")
     fac_table.to_excel(writer, sheet_name="facility_dqa")
     pd.DataFrame([{
+        "scope": "single_facility" if mode == "Single facility (facility report)" else "all_facilities",
+        "facility": selected_facility if mode == "Single facility (facility report)" else "ALL",
         "records": total_rows,
         "duplicates": duplicates,
         "missing_key_total": missing_key_total,
@@ -346,6 +323,6 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
 st.download_button(
     "Download DQA workbook (Excel)",
     data=output.getvalue(),
-    file_name="NEST360_DQA_Report.xlsx",
+    file_name=filename,
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
