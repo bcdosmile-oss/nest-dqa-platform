@@ -2,15 +2,16 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import io
+from datetime import datetime
 
 from docx import Document
 from docx.shared import Inches
 
 st.set_page_config(page_title="NEST360 Internal DQA", layout="wide")
 
-# ------------------------
+# =========================
 # PASSWORD PROTECTION
-# ------------------------
+# =========================
 def check_password():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
@@ -44,9 +45,9 @@ if uploaded_file is None:
     st.info("Upload a CSV/Excel export from REDCap to begin.")
     st.stop()
 
-# ------------------------
+# =========================
 # LOAD DATA
-# ------------------------
+# =========================
 if uploaded_file.name.lower().endswith(".csv"):
     df = pd.read_csv(uploaded_file)
 else:
@@ -57,87 +58,140 @@ original_cols = list(df.columns)
 st.subheader("Data Preview")
 st.dataframe(df.head(20), use_container_width=True)
 
-# ------------------------
-# COLUMN MAPPING (User selects)
-# ------------------------
+# =========================
+# COLUMN MAPPING
+# =========================
 st.subheader("1) Column mapping (select correctly)")
 
-col1, col2, col3 = st.columns(3)
-
-with col1:
+c1, c2, c3 = st.columns(3)
+with c1:
     facility_col = st.selectbox(
         "Facility column",
         options=original_cols,
         index=original_cols.index("Facility Name") if "Facility Name" in original_cols else 0
     )
-
-with col2:
+with c2:
     bw_col = st.selectbox(
         "Birth weight (grams) column",
         options=original_cols,
         index=original_cols.index("Birth weight (grams):") if "Birth weight (grams):" in original_cols else 0
     )
-
-with col3:
+with c3:
     ga_col = st.selectbox(
         "Gestational age (weeks) column",
         options=original_cols,
         index=original_cols.index("Weeks:") if "Weeks:" in original_cols else 0
     )
 
-col4, col5, col6 = st.columns(3)
-
-with col4:
+c4, c5, c6 = st.columns(3)
+with c4:
     cpap_col = st.selectbox(
         "CPAP administered column",
         options=["(None)"] + original_cols,
         index=(["(None)"] + original_cols).index("CPAP Administered:") if "CPAP Administered:" in original_cols else 0
     )
-
-with col5:
+with c5:
     kmc_col = st.selectbox(
         "KMC administered column",
         options=["(None)"] + original_cols,
         index=(["(None)"] + original_cols).index("KMC Administered:") if "KMC Administered:" in original_cols else 0
     )
-
-with col6:
+with c6:
     outcome_col = st.selectbox(
         "Outcome/Mortality column (preferred: Newborn status at discharge)",
         options=["(None)"] + original_cols,
         index=(["(None)"] + original_cols).index("Newborn status at discharge:") if "Newborn status at discharge:" in original_cols else 0
     )
 
-# ------------------------
-# PREP WORK + FILTER (Final + Prospective only)
-# ------------------------
+# Optional additional important fields (for completeness dashboards)
+opt1, opt2 = st.columns(2)
+with opt1:
+    discharge_wt_col = st.selectbox(
+        "Discharge weight column (optional)",
+        options=["(None)"] + original_cols,
+        index=0
+    )
+with opt2:
+    admit_date_col = st.selectbox(
+        "Admission date column (optional)",
+        options=["(None)"] + original_cols,
+        index=0
+    )
+disch_date_col = st.selectbox(
+    "Discharge date column (optional)",
+    options=["(None)"] + original_cols,
+    index=0
+)
+
+# =========================
+# PREP WORK
+# =========================
 work = df.copy()
+work[facility_col] = work[facility_col].astype(str).str.strip()
+
+# =========================
+# FILTER: Final + Prospective selector + diagnostics
+# =========================
+st.subheader("2) Dataset filter (Final + Prospective only)")
 
 final_col = "Are you entering a BASELINE or FINAL dataset record?"
 rp_col = "Are you entering a RETROSPECTIVE or PROSPECTIVE record?"
 
+def norm(x) -> str:
+    return str(x).strip().lower()
+
+filter_notes = []
+filter_applied = False
+
 if final_col in work.columns and rp_col in work.columns:
+    with st.expander("Show REDCap export values (diagnostics)", expanded=False):
+        st.write("Baseline/Final values (counts):")
+        st.dataframe(work[final_col].dropna().astype(str).str.strip().value_counts().to_frame("count"))
+        st.write("Retro/Prospective values (counts):")
+        st.dataframe(work[rp_col].dropna().astype(str).str.strip().value_counts().to_frame("count"))
+
+    final_vals = sorted(work[final_col].dropna().astype(str).str.strip().unique())
+    rp_vals = sorted(work[rp_col].dropna().astype(str).str.strip().unique())
+
+    # Smart defaults based on text; if codes exist, user can include them
+    default_final = [v for v in final_vals if "final" in norm(v)]
+    default_rp = [v for v in rp_vals if "prospective" in norm(v)]
+
+    colA, colB = st.columns(2)
+    with colA:
+        final_keep = st.multiselect(
+            "Select the value(s) that mean FINAL",
+            options=final_vals,
+            default=default_final if default_final else final_vals[:1]
+        )
+    with colB:
+        rp_keep = st.multiselect(
+            "Select the value(s) that mean PROSPECTIVE",
+            options=rp_vals,
+            default=default_rp if default_rp else rp_vals[:1]
+        )
+
     before = len(work)
-
-    final_series = work[final_col].astype(str).str.strip().str.lower()
-    rp_series = work[rp_col].astype(str).str.strip().str.lower()
-
     work = work[
-        (final_series.str.contains("final", na=False) | final_series.isin(["2", "final"])) &
-        (rp_series.str.contains("prospective", na=False) | rp_series.isin(["2", "prospective"]))
+        work[final_col].astype(str).str.strip().isin(final_keep) &
+        work[rp_col].astype(str).str.strip().isin(rp_keep)
     ].copy()
-
     removed = before - len(work)
-    st.success(f"Filtered to Final + Prospective only: {len(work):,} records (removed {removed:,}).")
+    st.success(f"Filtered records: {len(work):,} (removed {removed:,}).")
+    filter_applied = True
+    filter_notes.append(f"Final values included: {final_keep}")
+    filter_notes.append(f"Prospective values included: {rp_keep}")
 
     if len(work) == 0:
-        st.error("After filtering to Final + Prospective, no records remain. Check your dataset export.")
+        st.error("No records remain after filtering. Adjust FINAL/PROSPECTIVE selections.")
         st.stop()
 else:
-    st.warning("Final/Prospective columns not found in this file. No baseline filter applied.")
+    st.warning("Final/Prospective columns not found in this file. Filter not applied.")
+    filter_notes.append("Final/Prospective filter not applied (columns missing).")
 
-work[facility_col] = work[facility_col].astype(str).str.strip()
-
+# =========================
+# Derived numeric fields + categories
+# =========================
 bw = pd.to_numeric(work[bw_col], errors="coerce")
 ga = pd.to_numeric(work[ga_col], errors="coerce")
 
@@ -158,12 +212,12 @@ def ga_category(x):
 work["bw_cat"] = bw.map(bw_category)
 work["ga_cat"] = ga.map(ga_category)
 
-# ------------------------
+# =========================
 # ANALYSIS MODE (All vs Single facility)
-# ------------------------
-st.subheader("2) Analysis mode")
+# =========================
+st.subheader("3) Analysis mode")
 
-all_facilities = sorted([f for f in work[facility_col].dropna().unique() if f.lower() != "nan"])
+all_facilities = sorted([f for f in work[facility_col].dropna().unique() if str(f).strip().lower() != "nan"])
 
 mode = st.radio(
     "Choose analysis scope",
@@ -174,16 +228,43 @@ mode = st.radio(
 if mode == "Single facility (facility report)":
     selected_facility = st.selectbox("Select facility", options=all_facilities)
     data = work[work[facility_col] == selected_facility].copy()
-    st.info(f"Showing results for: **{selected_facility}** (n={len(data):,})")
+    st.info(f"Scope: **{selected_facility}** (n={len(data):,})")
 else:
     selected_facility = None
     data = work.copy()
-    st.info(f"Showing results for: **All facilities (aggregate)** (n={len(data):,})")
+    st.info(f"Scope: **All facilities** (n={len(data):,})")
 
-# ------------------------
+# =========================
+# Missingness: BLANK ONLY
+# =========================
+# Do not treat 'Not recorded/Not readable' as missing. Only blanks/NaN are missing.
+NOT_MISSING_VALUES = {
+    "not recorded",
+    "not readable",
+    "not record",
+    "not read",
+    "not_recorded/not_readable",
+    "not recorded/not readable",
+}
+
+def is_blank_only(x) -> bool:
+    if pd.isna(x):
+        return True
+    s = str(x).strip()
+    if s == "":
+        return True
+    # If it explicitly says not recorded/readable, it is NOT blank.
+    if s.lower() in NOT_MISSING_VALUES:
+        return False
+    return False
+
+def blank_count(series: pd.Series) -> int:
+    return int(series.map(is_blank_only).sum())
+
+# =========================
 # DQA SUMMARY (scoped)
-# ------------------------
-st.subheader("3) Data Quality Assurance (DQA) summary")
+# =========================
+st.subheader("4) DQA summary (blank-only missingness)")
 
 total_rows = len(data)
 duplicates = int(data.duplicated().sum())
@@ -196,8 +277,9 @@ if kmc_col != "(None)":
 if outcome_col != "(None)":
     key_cols.append(outcome_col)
 
-missing_key = data[key_cols].isna().sum().sort_values(ascending=False)
+missing_key = pd.Series({col: blank_count(data[col]) for col in key_cols}).sort_values(ascending=False)
 missing_key_total = int(missing_key.sum())
+missing_key_df = missing_key.to_frame("blank_missing_count")
 
 bw_scoped = pd.to_numeric(data[bw_col], errors="coerce")
 ga_scoped = pd.to_numeric(data[ga_col], errors="coerce")
@@ -221,23 +303,33 @@ b.metric("Duplicates", f"{duplicates:,}")
 c.metric("DQA Score", f"{dqa_score:.2f}%")
 d.metric("Status", status)
 
-st.markdown("### Missingness (key fields)")
-missing_key_df = missing_key.to_frame("missing_count")
+st.markdown("### Blank-only missingness (key fields)")
 st.dataframe(missing_key_df, use_container_width=True)
 
 st.markdown("### Validity checks (key clinical fields)")
 st.write(f"- Birth weight out of range (<300 or >5500g): **{bw_out_of_range:,}**")
 st.write(f"- Gestational age out of range (<20 or >44 weeks): **{ga_out_of_range:,}**")
 
-# ------------------------
-# CATEGORY DISTRIBUTIONS (scoped)
-# ------------------------
-st.subheader("4) Birth weight & gestational age categories")
+# =========================
+# Core breakdown tabs (BW / GA / Mortality / Completeness)
+# =========================
+st.subheader("5) Key breakdowns")
 
-left, right = st.columns(2)
+def yes_rate(series: pd.Series) -> float:
+    s = series.astype(str).str.strip().str.lower()
+    return float((s == "yes").mean() * 100)
 
-with left:
-    st.markdown("#### Birth weight categories")
+def death_rate(series: pd.Series) -> float:
+    s = series.astype(str).str.strip().str.lower()
+    return float((s == "dead").mean() * 100)
+
+tab_bw, tab_ga, tab_mort, tab_comp = st.tabs(
+    ["Birth weight", "Gestational age", "Mortality", "Completeness & Validity"]
+)
+
+# ---- Birth weight tab
+with tab_bw:
+    st.markdown("### Birth weight categories (counts)")
     bw_counts = data["bw_cat"].value_counts()
     st.dataframe(bw_counts.to_frame("count"), use_container_width=True)
 
@@ -247,8 +339,22 @@ with left:
     plt.ylabel("Count")
     st.pyplot(bw_fig)
 
-with right:
-    st.markdown("#### Gestational age categories")
+    st.markdown("### Outcomes / interventions by birth weight category")
+    grp = data.groupby("bw_cat", dropna=False)
+    summary_bw = pd.DataFrame({"n": grp.size()})
+
+    if cpap_col != "(None)":
+        summary_bw["CPAP yes (%)"] = grp[cpap_col].apply(yes_rate)
+    if kmc_col != "(None)":
+        summary_bw["KMC yes (%)"] = grp[kmc_col].apply(yes_rate)
+    if outcome_col != "(None)":
+        summary_bw["Death (%)"] = grp[outcome_col].apply(death_rate)
+
+    st.dataframe(summary_bw, use_container_width=True)
+
+# ---- GA tab
+with tab_ga:
+    st.markdown("### Gestational age categories (counts)")
     ga_counts = data["ga_cat"].value_counts()
     st.dataframe(ga_counts.to_frame("count"), use_container_width=True)
 
@@ -258,62 +364,97 @@ with right:
     plt.ylabel("Count")
     st.pyplot(ga_fig)
 
-# ------------------------
-# INTERVENTIONS & OUTCOMES (scoped)
-# ------------------------
-st.subheader("5) Interventions and outcomes (by BW/GA categories)")
-
-def yes_rate(series):
-    s = series.astype(str).str.strip().str.lower()
-    return (s == "yes").mean() * 100
-
-def death_rate(series):
-    s = series.astype(str).str.strip().str.lower()
-    return (s == "dead").mean() * 100
-
-summary_bw = None
-summary_ga = None
-
-tab1, tab2 = st.tabs(["By Birth weight", "By Gestational age"])
-
-with tab1:
-    grp = data.groupby("bw_cat", dropna=False)
-    summary = pd.DataFrame({"n": grp.size()})
-
-    if cpap_col != "(None)":
-        summary["CPAP yes (%)"] = grp[cpap_col].apply(yes_rate)
-    if kmc_col != "(None)":
-        summary["KMC yes (%)"] = grp[kmc_col].apply(yes_rate)
-    if outcome_col != "(None)":
-        summary["Death (%)"] = grp[outcome_col].apply(death_rate)
-
-    summary_bw = summary.copy()
-    st.dataframe(summary, use_container_width=True)
-
-with tab2:
+    st.markdown("### Outcomes / interventions by gestational age category")
     grp = data.groupby("ga_cat", dropna=False)
-    summary = pd.DataFrame({"n": grp.size()})
+    summary_ga = pd.DataFrame({"n": grp.size()})
 
     if cpap_col != "(None)":
-        summary["CPAP yes (%)"] = grp[cpap_col].apply(yes_rate)
+        summary_ga["CPAP yes (%)"] = grp[cpap_col].apply(yes_rate)
     if kmc_col != "(None)":
-        summary["KMC yes (%)"] = grp[kmc_col].apply(yes_rate)
+        summary_ga["KMC yes (%)"] = grp[kmc_col].apply(yes_rate)
     if outcome_col != "(None)":
-        summary["Death (%)"] = grp[outcome_col].apply(death_rate)
+        summary_ga["Death (%)"] = grp[outcome_col].apply(death_rate)
 
-    summary_ga = summary.copy()
-    st.dataframe(summary, use_container_width=True)
+    st.dataframe(summary_ga, use_container_width=True)
 
-# ------------------------
-# FACILITY LEVEL DQA (always from full dataset)
-# ------------------------
+# ---- Mortality tab
+with tab_mort:
+    if outcome_col == "(None)":
+        st.warning("Select an Outcome/Mortality column to view mortality breakdowns.")
+    else:
+        st.markdown("### Mortality by facility (all facilities, filtered dataset)")
+        # Use full filtered dataset (work), not scoped selection, for stakeholder view
+        tmp = work.copy()
+        tmp_out = tmp[outcome_col].astype(str).str.strip().str.lower()
+        tmp["dead_flag"] = (tmp_out == "dead").astype(int)
+
+        mort_by_fac = tmp.groupby(facility_col).agg(
+            records=("dead_flag", "size"),
+            deaths=("dead_flag", "sum"),
+        )
+        mort_by_fac["Death (%)"] = (mort_by_fac["deaths"] / mort_by_fac["records"]) * 100
+        mort_by_fac = mort_by_fac.sort_values("Death (%)", ascending=False)
+
+        st.dataframe(mort_by_fac, use_container_width=True)
+
+        st.markdown("### Top 10 highest mortality facilities")
+        st.dataframe(mort_by_fac.head(10), use_container_width=True)
+
+        st.markdown("### Bottom 10 lowest mortality facilities")
+        st.dataframe(mort_by_fac.tail(10), use_container_width=True)
+
+# ---- Completeness tab
+with tab_comp:
+    st.markdown("### Blank-only completeness (selected important fields)")
+    important_cols = [bw_col, ga_col]
+    if outcome_col != "(None)":
+        important_cols.append(outcome_col)
+    if cpap_col != "(None)":
+        important_cols.append(cpap_col)
+    if kmc_col != "(None)":
+        important_cols.append(kmc_col)
+    if discharge_wt_col != "(None)":
+        important_cols.append(discharge_wt_col)
+    if admit_date_col != "(None)":
+        important_cols.append(admit_date_col)
+    if disch_date_col != "(None)":
+        important_cols.append(disch_date_col)
+
+    comp = []
+    for col in important_cols:
+        blanks = blank_count(data[col])
+        comp.append({
+            "Field": col,
+            "Records": total_rows,
+            "Blank missing (n)": blanks,
+            "Blank missing (%)": (blanks / (total_rows if total_rows else 1)) * 100
+        })
+
+    comp_df = pd.DataFrame(comp).sort_values("Blank missing (%)", ascending=False)
+    st.dataframe(comp_df, use_container_width=True)
+
+    st.markdown("### Additional validity checks (optional fields)")
+    if discharge_wt_col != "(None)":
+        dw = pd.to_numeric(data[discharge_wt_col], errors="coerce")
+        dw_oob = int(((dw < 400) | (dw > 15000)).sum())
+        st.write(f"- Discharge weight out of range (<400 or >15000g): **{dw_oob:,}**")
+
+    if admit_date_col != "(None)" and disch_date_col != "(None)":
+        ad = pd.to_datetime(data[admit_date_col], errors="coerce")
+        dd = pd.to_datetime(data[disch_date_col], errors="coerce")
+        bad_logic = int((dd < ad).sum())
+        st.write(f"- Discharge date earlier than admission date: **{bad_logic:,}**")
+
+# =========================
+# Facility-level DQA table (always from full filtered dataset)
+# =========================
 st.subheader("6) Facility-level DQA (ranking)")
 
 fac_table = work.groupby(facility_col).apply(
     lambda g: pd.Series({
         "records": len(g),
-        "BW missing (%)": g[bw_col].isna().mean() * 100,
-        "GA missing (%)": g[ga_col].isna().mean() * 100,
+        "BW blank missing (%)": blank_count(g[bw_col]) / (len(g) if len(g) else 1) * 100,
+        "GA blank missing (%)": blank_count(g[ga_col]) / (len(g) if len(g) else 1) * 100,
         "BW out-of-range (n)": int(((pd.to_numeric(g[bw_col], errors="coerce") < 300) |
                                    (pd.to_numeric(g[bw_col], errors="coerce") > 5500)).sum()),
         "GA out-of-range (n)": int(((pd.to_numeric(g[ga_col], errors="coerce") < 20) |
@@ -323,9 +464,9 @@ fac_table = work.groupby(facility_col).apply(
 
 st.dataframe(fac_table, use_container_width=True)
 
-# ------------------------
+# =========================
 # WORD REPORT HELPERS
-# ------------------------
+# =========================
 def fig_to_bytes(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=200)
@@ -362,29 +503,33 @@ def build_word_report(
     missing_key_df,
     bw_counts_df,
     ga_counts_df,
-    summary_bw=None,
-    summary_ga=None,
-    fac_table=None,
-    bw_fig=None,
-    ga_fig=None
+    summary_bw,
+    summary_ga,
+    fac_table,
+    bw_fig,
+    ga_fig,
+    filter_notes,
 ):
     doc = Document()
     doc.add_heading("NEST360 Neonatal DQA & Data Summary Report", level=0)
 
+    doc.add_paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     doc.add_paragraph(f"Scope: {scope_label}")
-    doc.add_paragraph("Dataset filtered to Final + Prospective records only (baseline excluded).")
+
+    doc.add_heading("Filter notes", level=1)
+    for n in filter_notes:
+        doc.add_paragraph(f"- {n}")
 
     doc.add_heading("Executive Summary", level=1)
     doc.add_paragraph(
-        f"This report summarizes data completeness, validity, and key descriptive distributions. "
+        f"This report summarizes blank-only completeness, key validity checks, and core descriptive distributions. "
         f"DQA Score: {dqa_score:.2f}% ({status}). Records: {total_rows:,}. Duplicates: {duplicates:,}."
     )
 
-    # Tables
     df_to_docx_table(
         doc,
-        missing_key_df.reset_index().rename(columns={"index": "Field", "missing_count": "Missing count"}),
-        "Missingness (Key Fields)"
+        missing_key_df.reset_index().rename(columns={"index": "Field", "blank_missing_count": "Blank missing count"}),
+        "Blank-only Missingness (Key Fields)"
     )
 
     df_to_docx_table(
@@ -399,33 +544,24 @@ def build_word_report(
         "Gestational Age Categories (Counts)"
     )
 
-    # Charts
     doc.add_heading("Charts", level=1)
-    if bw_fig is not None:
-        doc.add_paragraph("Birth weight category distribution")
-        doc.add_picture(fig_to_bytes(bw_fig), width=Inches(6.5))
-    if ga_fig is not None:
-        doc.add_paragraph("Gestational age category distribution")
-        doc.add_picture(fig_to_bytes(ga_fig), width=Inches(6.5))
+    doc.add_paragraph("Birth weight category distribution")
+    doc.add_picture(fig_to_bytes(bw_fig), width=Inches(6.5))
+    doc.add_paragraph("Gestational age category distribution")
+    doc.add_picture(fig_to_bytes(ga_fig), width=Inches(6.5))
 
-    # Intervention/outcome tables
-    if summary_bw is not None:
-        df_to_docx_table(doc, summary_bw.reset_index().rename(columns={"bw_cat": "Birth weight category"}), "Interventions/Outcomes by Birth Weight Category")
-    if summary_ga is not None:
-        df_to_docx_table(doc, summary_ga.reset_index().rename(columns={"ga_cat": "Gestational age category"}), "Interventions/Outcomes by Gestational Age Category")
-
-    # Facility ranking (all facilities)
-    if fac_table is not None:
-        df_to_docx_table(doc, fac_table.reset_index().rename(columns={fac_table.index.name or "index": "Facility"}), "Facility-level DQA Summary (All Facilities)", max_rows=500)
+    df_to_docx_table(doc, summary_bw.reset_index().rename(columns={"bw_cat": "Birth weight category"}), "Interventions/Outcomes by Birth Weight Category")
+    df_to_docx_table(doc, summary_ga.reset_index().rename(columns={"ga_cat": "Gestational age category"}), "Interventions/Outcomes by Gestational Age Category")
+    df_to_docx_table(doc, fac_table.reset_index().rename(columns={fac_table.index.name or "index": "Facility"}), "Facility-level DQA Summary (All Facilities)", max_rows=500)
 
     out = io.BytesIO()
     doc.save(out)
     out.seek(0)
     return out
 
-# ------------------------
+# =========================
 # DOWNLOAD OUTPUTS
-# ------------------------
+# =========================
 st.subheader("7) Download outputs")
 
 # Excel filename
@@ -435,10 +571,10 @@ if mode == "Single facility (facility report)" and selected_facility:
     excel_name = f"NEST360_DQA_Report_{safe_name}.xlsx"
 
 # Excel workbook (scoped)
-output = io.BytesIO()
-with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+excel_bytes = io.BytesIO()
+with pd.ExcelWriter(excel_bytes, engine="xlsxwriter") as writer:
     data.to_excel(writer, index=False, sheet_name="data_with_categories")
-    missing_key_df.to_excel(writer, sheet_name="missing_key_fields")
+    missing_key_df.to_excel(writer, sheet_name="blank_missing_key_fields")
     fac_table.to_excel(writer, sheet_name="facility_dqa")
 
     pd.DataFrame([{
@@ -446,7 +582,7 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         "facility": selected_facility if mode == "Single facility (facility report)" else "ALL",
         "records": total_rows,
         "duplicates": duplicates,
-        "missing_key_total": missing_key_total,
+        "blank_missing_key_total": missing_key_total,
         "bw_out_of_range": bw_out_of_range,
         "ga_out_of_range": ga_out_of_range,
         "dqa_score": round(dqa_score, 2),
@@ -455,13 +591,42 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
 
 st.download_button(
     "Download DQA workbook (Excel)",
-    data=output.getvalue(),
+    data=excel_bytes.getvalue(),
     file_name=excel_name,
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
-# Word report
-scope_label = "ALL facilities" if mode == "All facilities (aggregate)" else f"Facility: {selected_facility}"
+# Word report filename
+docx_name = "NEST360_DQA_Report.docx"
+if mode == "Single facility (facility report)" and selected_facility:
+    safe_name = "".join(ch for ch in selected_facility if ch.isalnum() or ch in [" ", "_", "-"]).strip()
+    docx_name = f"NEST360_DQA_Report_{safe_name}.docx"
+
+scope_label = "ALL facilities (aggregate)" if mode == "All facilities (aggregate)" else f"Facility: {selected_facility}"
+
+# Ensure charts exist even if user doesn't click into the tabs first
+# If tab not visited, bw_fig/ga_fig may not exist. Safeguard by rebuilding quickly if missing.
+if "bw_fig" not in locals():
+    tmp = data["bw_cat"].value_counts()
+    bw_fig = plt.figure()
+    tmp.plot(kind="bar")
+    plt.xticks(rotation=45, ha="right")
+    plt.ylabel("Count")
+
+if "ga_fig" not in locals():
+    tmp = data["ga_cat"].value_counts()
+    ga_fig = plt.figure()
+    tmp.plot(kind="bar")
+    plt.xticks(rotation=45, ha="right")
+    plt.ylabel("Count")
+
+# Ensure summaries exist
+if summary_bw is None:
+    grp = data.groupby("bw_cat", dropna=False)
+    summary_bw = pd.DataFrame({"n": grp.size()})
+if summary_ga is None:
+    grp = data.groupby("ga_cat", dropna=False)
+    summary_ga = pd.DataFrame({"n": grp.size()})
 
 word_bytes = build_word_report(
     scope_label=scope_label,
@@ -470,19 +635,15 @@ word_bytes = build_word_report(
     total_rows=total_rows,
     duplicates=duplicates,
     missing_key_df=missing_key_df,
-    bw_counts_df=bw_counts.to_frame("count"),
-    ga_counts_df=ga_counts.to_frame("count"),
+    bw_counts_df=data["bw_cat"].value_counts().to_frame("count"),
+    ga_counts_df=data["ga_cat"].value_counts().to_frame("count"),
     summary_bw=summary_bw,
     summary_ga=summary_ga,
     fac_table=fac_table,
     bw_fig=bw_fig,
-    ga_fig=ga_fig
+    ga_fig=ga_fig,
+    filter_notes=filter_notes,
 )
-
-docx_name = "NEST360_DQA_Report.docx"
-if mode == "Single facility (facility report)" and selected_facility:
-    safe_name = "".join(ch for ch in selected_facility if ch.isalnum() or ch in [" ", "_", "-"]).strip()
-    docx_name = f"NEST360_DQA_Report_{safe_name}.docx"
 
 st.download_button(
     "Download report (Word .docx)",
