@@ -130,64 +130,51 @@ work = df.copy()
 work[facility_col] = work[facility_col].astype(str).str.strip()
 
 # =========================
-# FILTER: Final + Prospective selector + diagnostics
+# FILTER: FINAL selector + diagnostics (ignore Prospective/Retrospective)
 # =========================
-st.subheader("2) Dataset filter (Final + Prospective only)")
+st.subheader("2) Dataset filter (FINAL only)")
 
 final_col = "Are you entering a BASELINE or FINAL dataset record?"
-rp_col = "Are you entering a RETROSPECTIVE or PROSPECTIVE record?"
 
 def norm(x) -> str:
     return str(x).strip().lower()
 
 filter_notes = []
-filter_applied = False
 
-if final_col in work.columns and rp_col in work.columns:
+if final_col in work.columns:
     with st.expander("Show REDCap export values (diagnostics)", expanded=False):
         st.write("Baseline/Final values (counts):")
         st.dataframe(work[final_col].dropna().astype(str).str.strip().value_counts().to_frame("count"))
-        st.write("Retro/Prospective values (counts):")
-        st.dataframe(work[rp_col].dropna().astype(str).str.strip().value_counts().to_frame("count"))
 
     final_vals = sorted(work[final_col].dropna().astype(str).str.strip().unique())
-    rp_vals = sorted(work[rp_col].dropna().astype(str).str.strip().unique())
 
-    # Smart defaults based on text; if codes exist, user can include them
-    default_final = [v for v in final_vals if "final" in norm(v)]
-    default_rp = [v for v in rp_vals if "prospective" in norm(v)]
+    default_final = [v for v in final_vals if "final" in norm(v) or norm(v) == "2"]
+    final_keep = st.multiselect(
+        "Select the value(s) that mean FINAL",
+        options=final_vals,
+        default=default_final if default_final else final_vals[:1]
+    )
 
-    colA, colB = st.columns(2)
-    with colA:
-        final_keep = st.multiselect(
-            "Select the value(s) that mean FINAL",
-            options=final_vals,
-            default=default_final if default_final else final_vals[:1]
-        )
-    with colB:
-        rp_keep = st.multiselect(
-            "Select the value(s) that mean PROSPECTIVE",
-            options=rp_vals,
-            default=default_rp if default_rp else rp_vals[:1]
-        )
+    if not final_keep:
+        st.error("Please select at least one FINAL value to continue.")
+        st.stop()
 
     before = len(work)
-    work = work[
-        work[final_col].astype(str).str.strip().isin(final_keep) &
-        work[rp_col].astype(str).str.strip().isin(rp_keep)
-    ].copy()
+    work = work[work[final_col].astype(str).str.strip().isin(final_keep)].copy()
     removed = before - len(work)
-    st.success(f"Filtered records: {len(work):,} (removed {removed:,}).")
-    filter_applied = True
+
+    st.success(f"Filtered to FINAL only: {len(work):,} records (removed {removed:,}).")
     filter_notes.append(f"Final values included: {final_keep}")
-    filter_notes.append(f"Prospective values included: {rp_keep}")
 
     if len(work) == 0:
-        st.error("No records remain after filtering. Adjust FINAL/PROSPECTIVE selections.")
+        st.error("No records remain after FINAL filtering. Adjust the selected FINAL value(s).")
         st.stop()
 else:
-    st.warning("Final/Prospective columns not found in this file. Filter not applied.")
-    filter_notes.append("Final/Prospective filter not applied (columns missing).")
+    st.warning("FINAL column not found in this file. Filter not applied.")
+    filter_notes.append("FINAL filter not applied (column missing).")
+
+# Always note PR field is ignored (per your request)
+filter_notes.append("Prospective/Retrospective field ignored due to known entry errors.")
 
 # =========================
 # Derived numeric fields + categories
@@ -253,7 +240,6 @@ def is_blank_only(x) -> bool:
     s = str(x).strip()
     if s == "":
         return True
-    # If it explicitly says not recorded/readable, it is NOT blank.
     if s.lower() in NOT_MISSING_VALUES:
         return False
     return False
@@ -382,8 +368,7 @@ with tab_mort:
     if outcome_col == "(None)":
         st.warning("Select an Outcome/Mortality column to view mortality breakdowns.")
     else:
-        st.markdown("### Mortality by facility (all facilities, filtered dataset)")
-        # Use full filtered dataset (work), not scoped selection, for stakeholder view
+        st.markdown("### Mortality by facility (all facilities, FINAL filtered dataset)")
         tmp = work.copy()
         tmp_out = tmp[outcome_col].astype(str).str.strip().str.lower()
         tmp["dead_flag"] = (tmp_out == "dead").astype(int)
@@ -446,7 +431,7 @@ with tab_comp:
         st.write(f"- Discharge date earlier than admission date: **{bad_logic:,}**")
 
 # =========================
-# Facility-level DQA table (always from full filtered dataset)
+# Facility-level DQA table (always from full FINAL filtered dataset)
 # =========================
 st.subheader("6) Facility-level DQA (ranking)")
 
@@ -550,9 +535,22 @@ def build_word_report(
     doc.add_paragraph("Gestational age category distribution")
     doc.add_picture(fig_to_bytes(ga_fig), width=Inches(6.5))
 
-    df_to_docx_table(doc, summary_bw.reset_index().rename(columns={"bw_cat": "Birth weight category"}), "Interventions/Outcomes by Birth Weight Category")
-    df_to_docx_table(doc, summary_ga.reset_index().rename(columns={"ga_cat": "Gestational age category"}), "Interventions/Outcomes by Gestational Age Category")
-    df_to_docx_table(doc, fac_table.reset_index().rename(columns={fac_table.index.name or "index": "Facility"}), "Facility-level DQA Summary (All Facilities)", max_rows=500)
+    df_to_docx_table(
+        doc,
+        summary_bw.reset_index().rename(columns={"bw_cat": "Birth weight category"}),
+        "Interventions/Outcomes by Birth Weight Category"
+    )
+    df_to_docx_table(
+        doc,
+        summary_ga.reset_index().rename(columns={"ga_cat": "Gestational age category"}),
+        "Interventions/Outcomes by Gestational Age Category"
+    )
+    df_to_docx_table(
+        doc,
+        fac_table.reset_index().rename(columns={fac_table.index.name or "index": "Facility"}),
+        "Facility-level DQA Summary (All Facilities)",
+        max_rows=500
+    )
 
     out = io.BytesIO()
     doc.save(out)
@@ -605,7 +603,6 @@ if mode == "Single facility (facility report)" and selected_facility:
 scope_label = "ALL facilities (aggregate)" if mode == "All facilities (aggregate)" else f"Facility: {selected_facility}"
 
 # Ensure charts exist even if user doesn't click into the tabs first
-# If tab not visited, bw_fig/ga_fig may not exist. Safeguard by rebuilding quickly if missing.
 if "bw_fig" not in locals():
     tmp = data["bw_cat"].value_counts()
     bw_fig = plt.figure()
@@ -621,12 +618,25 @@ if "ga_fig" not in locals():
     plt.ylabel("Count")
 
 # Ensure summaries exist
-if summary_bw is None:
+if "summary_bw" not in locals():
     grp = data.groupby("bw_cat", dropna=False)
     summary_bw = pd.DataFrame({"n": grp.size()})
-if summary_ga is None:
+    if cpap_col != "(None)":
+        summary_bw["CPAP yes (%)"] = grp[cpap_col].apply(yes_rate)
+    if kmc_col != "(None)":
+        summary_bw["KMC yes (%)"] = grp[kmc_col].apply(yes_rate)
+    if outcome_col != "(None)":
+        summary_bw["Death (%)"] = grp[outcome_col].apply(death_rate)
+
+if "summary_ga" not in locals():
     grp = data.groupby("ga_cat", dropna=False)
     summary_ga = pd.DataFrame({"n": grp.size()})
+    if cpap_col != "(None)":
+        summary_ga["CPAP yes (%)"] = grp[cpap_col].apply(yes_rate)
+    if kmc_col != "(None)":
+        summary_ga["KMC yes (%)"] = grp[kmc_col].apply(yes_rate)
+    if outcome_col != "(None)":
+        summary_ga["Death (%)"] = grp[outcome_col].apply(death_rate)
 
 word_bytes = build_word_report(
     scope_label=scope_label,
